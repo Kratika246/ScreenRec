@@ -1,0 +1,29 @@
+{
+  "name": "infra",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "watch": "tsc -w",
+    "test": "jest",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.15.0",
+    "@swc/jest": "^0.2.39",
+    "@types/jest": "^30",
+    "@types/node": "^24.10.1",
+    "jest": "^30",
+    "aws-cdk": "2.1145.0",
+    "tsx": "^4.23.0",
+    "typescript": "~7.0.2",
+    "esbuild": "^0.27.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.272.0",
+    "constructs": "^10.5.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0",
+    "@aws-sdk/s3-request-presigner": "^3.0.0"
+  }
+}

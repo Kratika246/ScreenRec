@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.output/
+.wxt/
+cdk.out/
+.env*
+*.pem
+
+!**/.env.example
+infra/outputs.json
+.tmp/

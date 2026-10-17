@@ -1,0 +1,24 @@
+{
+  "name": "CapitalComputeTech_Assessment",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "pnpm --dir infra test --runInBand",
+    "build": "pnpm --dir apps/extension build && pnpm --dir apps/web build && pnpm --dir infra build",
+    "check": "pnpm --dir apps/extension compile && pnpm --dir apps/web lint && pnpm --dir infra build",
+    "zip": "pnpm --dir apps/extension zip"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.14.0",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@12.14.0",
+  "type": "module"
+}

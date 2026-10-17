@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+const outputs=JSON.parse(fs.readFileSync(process.argv[2]||'infra/outputs.json','utf8'));
+const values=outputs.ScreenRecStack||Object.values(outputs)[0];
+if(!values?.ViewerBucketName||!values?.DistributionId)throw new Error('Missing viewer bucket or distribution outputs');
+if(!fs.existsSync('apps/web/dist/index.html'))throw new Error('Build the web app first');
+execFileSync('aws',['s3','sync','apps/web/dist',`s3://${values.ViewerBucketName}`,'--exclude','index.html','--cache-control','public,max-age=31536000,immutable'],{stdio:'inherit'});
+execFileSync('aws',['s3','cp','apps/web/dist/index.html',`s3://${values.ViewerBucketName}/index.html`,'--cache-control','no-cache','--content-type','text/html'],{stdio:'inherit'});
+execFileSync('aws',['cloudfront','create-invalidation','--distribution-id',values.DistributionId,'--paths','/','/index.html','/v/*','--no-cli-pager'],{stdio:'inherit'});
+console.log('Published viewer: '+values.ViewerUrl);
