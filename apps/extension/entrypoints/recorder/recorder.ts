@@ -4,6 +4,7 @@ import { UploadQueue, uploadPartWithRetry } from '../../utils/upload';
 import { PartBuffer, PART_SIZE } from '../../utils/multipart';
 import { recordingBlob, removeSession, saveChunk, saveSession, sessions, type Session } from '../../utils/store';
 import { formatTime, presentation } from '../../utils/presentation';
+import { FrameSampler } from '../../utils/frames';
 import { desktopConstraints } from '../../utils/capture';
 import type { RecordingState, RecordingMode } from '../../../../packages/shared/src/index';
 
@@ -15,6 +16,7 @@ mode.value = params.get('mode') || 'screen'; mic.checked = params.get('mic') !==
 let state: RecordingState = { status: 'idle', duration: 0, uploadProgress: 0 };
 let session: Session | undefined, recorder: MediaRecorder | undefined;
 let sources: MediaStream[] = [], audio: AudioContext | undefined, drawTimer: number | undefined, ticker: number | undefined;
+let frames:FrameSampler|undefined,frameStop:Promise<void>|undefined;
 let activeStart = 0, elapsed = 0, chunkIndex = 0, nextPart = 1, buffer = new PartBuffer();
 let persist = Promise.resolve(), queue = new UploadQueue();
 let uploadError: unknown, stopped = false, writeError: unknown;
@@ -92,6 +94,7 @@ async function finish() {
     current.duration = duration(); await saveSession(current);
     if (current.local) { await download(current); report({ status: 'idle', uploadProgress: 100, outcome:'local' }); }
     else {
+      await frameStop;
       const tail = buffer.flush(); if (tail) enqueue(tail);
       await queue.drain(); if (uploadError) throw uploadError;
       report({uploadProgress:100,uploadStage:'finalizing'});
@@ -106,7 +109,7 @@ function stop() {
   stopped = true;
   elapsed += activeStart ? performance.now() - activeStart : 0; activeStart = 0;
   report({ status: 'uploading', duration: duration(),uploadStage:'sending' });
-  void copyLink(); recorder.stop(); cleanup();
+  void copyLink(); frameStop=frames?.stop(); recorder.stop(); cleanup();
 }
 function togglePause() {
   if (!recorder || !['recording', 'paused'].includes(recorder.state)) return;
@@ -129,6 +132,7 @@ function chooseDesktop(): Promise<MediaStream> {
 }
 async function begin() {
   if (!['idle', 'failed'].includes(state.status)) return;
+  frames?.cancel();frames=undefined;frameStop=undefined;
   session = undefined;
   startButton.disabled = true; report({ status: 'preparing', error: undefined, copied: false, duration:0,uploadProgress:0, shareUrl: undefined,outcome:undefined,uploadStage:undefined }); el('share').hidden = true; el('copy').hidden = true;
   let screen: MediaStream | undefined;
@@ -141,12 +145,13 @@ async function begin() {
     if (mic.checked) { const microphone = await navigator.mediaDevices.getUserMedia({ audio: true }); sources.push(microphone); }
     const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
     if (!mime) throw new Error('This browser cannot record WebM.');
-    session = { id: crypto.randomUUID(), mode: mode.value, local: local.checked, duration: 0, mime, total: 0, parts: [] };
-    if (!session.local) Object.assign(session, await api('/videos', { mode: mode.value as RecordingMode, title: `Recording ${new Date().toLocaleString()}` }));
+    session = { id: crypto.randomUUID(), mode: mode.value, local: local.checked, duration: 0, mime, hasAudio:sources.some(s=>s.getAudioTracks().length>0), total: 0, parts: [] };
+    if (!session.local) Object.assign(session, await api('/videos', { mode: mode.value as RecordingMode, title: `Recording ${new Date().toLocaleString()}`,hasAudio:session.hasAudio }));
     await saveSession(session);
+    const screenPreview=screen?await videoFor(screen):undefined;
     let videoStream = screen || camera!;
     if (screen && camera) {
-      const screenVideo = await videoFor(screen), cameraVideo = await videoFor(camera);
+      const screenVideo = screenPreview!, cameraVideo = await videoFor(camera);
       const canvas = document.createElement('canvas');
       const settings = screen.getVideoTracks()[0]!.getSettings();
       canvas.width = settings.width || 1920; canvas.height = settings.height || 1080;
@@ -196,12 +201,22 @@ async function begin() {
     for (let n = 3; n > 0; n--) { report({ status: 'countdown', countdown: n }); await new Promise(r => setTimeout(r, 1000)); }
     if (screen && screen.getVideoTracks()[0]?.readyState === 'ended') throw new Error('Screen sharing ended before recording.');
     recorder.start(5000); activeStart = performance.now();
+    if(screenPreview && !session.local) {
+      const current=session;
+      frames=new FrameSampler(screenPreview,()=>recorder?.state==='recording',()=>duration(),async(slot,timestamp,blob)=>{
+        const result=await api(`/videos/${current.videoId}/frames`,{slot,timestamp,size:blob.size});
+        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000);
+        try {const response=await fetch(result.presignedUrl,{method:'PUT',headers:result.headers,body:blob,signal:controller.signal});if(!response.ok)throw new Error('Snapshot upload failed');}
+        finally {clearTimeout(timer);}
+      });
+      frames.start();
+    }
     report({ status: 'recording', duration: 0, uploadProgress: 0, videoId: session.videoId, shareUrl: session.shareUrl, mode: mode.value as RecordingMode });
     ticker = window.setInterval(() => report({ duration: duration() }), 1000);
     stopButton.disabled = false; pauseButton.disabled = false; pauseButton.textContent = 'Pause';
     el('message').textContent = 'Recording. Keep this tab open; controls are also available from the extension.';
   } catch (error) {
-    cleanup(); if (session?.videoId) await api(`/videos/${session.videoId}/cancel`, {}).catch(() => {});
+    frames?.cancel();cleanup(); if (session?.videoId) await api(`/videos/${session.videoId}/cancel`, {}).catch(() => {});
     if (session) await removeSession(session.id).catch(() => {});
     session = undefined; report({ status: error instanceof DOMException && error.name==='AbortError'?'idle':'failed', error: error instanceof DOMException && error.name==='AbortError'?undefined:error instanceof Error?error.message:String(error) }); startButton.disabled = false;
   }

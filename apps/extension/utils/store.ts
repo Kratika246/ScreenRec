@@ -1,4 +1,4 @@
-export interface Session { id: string; mode: string; local: boolean; videoId?: string; uploadId?: string; shareUrl?: string; duration: number; mime: string; total: number; parts: { partNumber: number; etag: string; size: number }[] }
+export interface Session { id: string; mode: string; local: boolean; videoId?: string; uploadId?: string; shareUrl?: string; duration: number; mime: string; hasAudio?: boolean; total: number; parts: { partNumber: number; etag: string; size: number }[] }
 const db = new Promise<IDBDatabase>((resolve, reject) => {
   const request = indexedDB.open('screenrec', 1);
   request.onupgradeneeded = () => { request.result.createObjectStore('sessions', { keyPath: 'id' }); request.result.createObjectStore('chunks', { keyPath: ['session', 'index'] }); };

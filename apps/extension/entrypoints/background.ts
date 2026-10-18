@@ -39,6 +39,7 @@ export default defineBackground(() => {
           return chrome.runtime.sendMessage({target:'clipboard',url:msg.url});
         case 'SIGN_IN': if (trusted(sender)) await signIn(); return { ok: true };
         case 'SIGN_OUT': if (trusted(sender)) await signOut(); return { ok: true };
+        case 'RETRY_AI': if(trusted(sender) && typeof msg.videoId==='string' && /^[a-f0-9-]{36}$/i.test(msg.videoId))return api('/videos/'+msg.videoId+'/ai',{}); break;
         case 'LIST_VIDEOS': if (trusted(sender)) return api('/videos'); break;
         case 'PREVIEW_OFFER': case 'PREVIEW_ANSWER': case 'PREVIEW_ICE': case 'PREVIEW_CLOSE':
           if (!trusted(sender)) break;

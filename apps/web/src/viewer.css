@@ -295,3 +295,34 @@ body {
   .video-title { font-size: 20px; }
   .share-url-row { flex-direction: column; }
 }
+
+
+.ai-panel{background:var(--surface,#191922);border:1px solid var(--border,#30303c);border-radius:16px;padding:25px}
+.ai-heading-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
+.ai-heading-row h2{font-size:18px;margin:0;font-weight:600;letter-spacing:-.4px}
+.ai-badge{font-size:10px;border:1px solid #9a83df40;border-radius:20px;padding:6px 10px;color:#c1afe9;white-space:nowrap}
+.ai-badge.working{background:#a28ce00b}
+.ai-processing,.ai-empty{font-size:13px;line-height:1.8;color:#aaa3bd;margin:0 0 10px}
+.ai-spinner{display:inline-block;width:12px;height:12px;border:2px solid #56476d;border-top-color:#bba4ff;border-radius:50%;animation:ai-spin .9s linear infinite;margin-right:9px}
+.ai-summary h3,.transcript-section h3{font-size:12px;color:#bfaedb;font-weight:650;margin:0 0 12px}
+.ai-summary p{font-size:14px;line-height:1.9;white-space:pre-line;color:#e4dded;margin:0 0 14px}
+.ai-summary small{display:block;font-size:10px;line-height:1.6;color:#8e809f;margin:7px 0}
+.transcript-section{border-top:1px solid var(--border,#35303f);margin-top:24px;padding-top:22px}
+.transcript-heading{display:flex;align-items:center;justify-content:space-between;gap:20px}.transcript-heading h3{margin:0;white-space:nowrap}.transcript-heading h3 span{font-size:9px;color:#9787a9;margin-left:6px}
+.transcript-search{max-width:330px;width:55%}.transcript-search input{box-sizing:border-box;width:100%;background:#0e0e1755;border:1px solid #443750;border-radius:8px;color:#ece3f6;padding:10px 12px;font:inherit;font-size:12px;outline:none}.transcript-search input:focus{border-color:#a18acb}.transcript-search input::placeholder{color:#8a799a}
+.transcript-hint{font-size:10px;color:#8a7b9b;margin:15px 0}.transcript-list{max-height:420px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#675078 transparent}
+.transcript-row{width:100%;display:flex;align-items:flex-start;gap:18px;background:transparent;border:1px solid transparent;border-radius:8px;color:#c7b9d4;text-align:left;padding:12px 10px;font:inherit;font-size:13px;line-height:1.7;cursor:pointer}.transcript-row time{flex-shrink:0;font-size:10px;font-variant-numeric:tabular-nums;color:#a58ec4;padding-top:3px;min-width:36px}.transcript-row:hover{background:#a286d00b}.transcript-row.active{border-color:#9d7ecb35;background:#9d7ecb10;color:#f3e9ff}.transcript-row:focus-visible{outline:2px solid #b19bd4;outline-offset:-2px}
+.transcript-more,.transcript-retry{background:transparent;border:1px solid #73539070;border-radius:7px;color:#bfa0dc;font:inherit;font-size:11px;padding:8px 12px;margin-top:12px;cursor:pointer}.transcript-plain{white-space:pre-wrap;color:#d0c0dd;font-size:13px;line-height:1.9}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@keyframes ai-spin{to{transform:rotate(360deg)}}@media(max-width:640px){.ai-panel{padding:18px}.ai-heading-row{align-items:flex-start;flex-direction:column;gap:10px}.transcript-heading{align-items:flex-start;flex-direction:column;gap:12px}.transcript-search{width:100%;max-width:none}}@media(prefers-reduced-motion:reduce){.ai-spinner{animation:none}}
+
+.chapters-section,.issues-section{border-top:1px solid var(--border,#35303f);margin-top:24px;padding-top:20px}
+.chapters-section h3,.issues-section h3{font-size:13px;color:#bfaedb;margin:0 0 12px}
+.chapter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-top:12px}
+.chapter-button,.issue-seek{display:flex;align-items:baseline;gap:12px;text-align:left;font:inherit;cursor:pointer}
+.chapter-button{background:#a286d00b;border:1px solid #9d7ecb35;border-radius:10px;padding:13px;color:#d4c6e2}
+.chapter-button:hover{background:#9d7ecb18}
+.chapter-button time,.issue-seek time{font-size:12px;font-variant-numeric:tabular-nums;color:#b39bda;white-space:nowrap}
+.issue-card{border:1px solid #b68d4b40;background:#b68d4b0a;border-radius:10px;padding:16px;margin:10px 0}
+.issue-seek{border:0;background:transparent;padding:0;color:#ddc49d}
+.issue-card p{color:#b9ac9c;font-size:14px;line-height:1.6;margin-bottom:0;white-space:pre-wrap}
+.chapter-button:focus-visible,.issue-seek:focus-visible{outline:2px solid #7c5cce;outline-offset:3px}

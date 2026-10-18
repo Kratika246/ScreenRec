@@ -1,6 +1,7 @@
+jest.mock('@aws-sdk/client-lambda',()=>({LambdaClient:jest.fn().mockImplementation(()=>({send:jest.fn().mockResolvedValue({})})),InvokeCommand:class{constructor(public input:unknown){}}}));
 jest.mock('@aws-sdk/client-s3',()=>({
   S3Client:jest.fn().mockImplementation(()=>({send:jest.fn()})),
-  ...Object.fromEntries(['CreateMultipartUpload','UploadPart','CompleteMultipartUpload','AbortMultipartUpload','HeadObject','ListParts'].map(n=>[n+'Command',class { input:unknown; kind=n; constructor(input:unknown){this.input=input;} }]))
+  ...Object.fromEntries(['CreateMultipartUpload','UploadPart','CompleteMultipartUpload','AbortMultipartUpload','HeadObject','ListParts','GetObject','PutObject'].map(n=>[n+'Command',class { input:unknown; kind=n; constructor(input:unknown){this.input=input;} }]))
 }));
 jest.mock('@aws-sdk/client-dynamodb',()=>({DynamoDBClient:jest.fn()}));
 jest.mock('@aws-sdk/lib-dynamodb',()=>({
@@ -8,7 +9,8 @@ jest.mock('@aws-sdk/lib-dynamodb',()=>({
   ...Object.fromEntries(['Put','Get','Query','Update'].map(n=>[n+'Command',class {input:unknown;kind=n;constructor(input:unknown){this.input=input;}}]))
 }));
 jest.mock('@aws-sdk/s3-request-presigner',()=>({getSignedUrl:jest.fn().mockResolvedValue('https://upload.example/part')}));
-import {s3,ddb,getVideo,getPartUrl,completeUpload,cancelUpload,createVideo,listVideos} from '../lambda/videos';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import {s3,ddb,getVideo,getPartUrl,completeUpload,cancelUpload,createVideo,listVideos,getTranscript,retryAi,aiInvoker,getFrameUrl} from '../lambda/videos';
 const id='00000000-0000-4000-8000-000000000001';
 const video={id,userId:'owner',uploadId:'upload',s3Key:`videos/${id}/recording.webm`,status:'recording',title:'Demo',createdAt:'2026-10-18'};
 const event=(body:unknown={},owner='owner')=>({pathParameters:{id},body:JSON.stringify(body),requestContext:{authorizer:{claims:{sub:owner}}}});
@@ -102,4 +104,62 @@ test('unexpected failures expose a support reference without leaking AWS details
   expect(JSON.parse(result.body)).toMatchObject({requestId:'reference-123'});
   expect(result.body).not.toContain('private internals');
   expect(log).toHaveBeenCalled();log.mockRestore();
+});
+
+test('public AI metadata excludes internal attempts and job names',async()=>{
+  db.mockResolvedValue({Item:{...video,status:'ready',aiStatus:'ready',summary:'A useful summary',transcriptReady:true,aiJobName:'private-job',aiAttempt:'private-attempt'}});
+  const result=JSON.parse((await getVideo({pathParameters:{id}})).body);
+  expect(result).toMatchObject({aiStatus:'ready',summary:'A useful summary',transcriptReady:true});
+  expect(result.aiJobName).toBeUndefined();expect(result.aiAttempt).toBeUndefined();
+});
+test('known silent recording stores its audio flag for the S3 worker',async()=>{
+  storage.mockResolvedValue({UploadId:'new'});
+  await createVideo(event({mode:'screen',hasAudio:false}));
+  const put=db.mock.calls.find(([c])=>c.kind==='Put')[0].input;
+  expect(put.Item.hasAudio).toBe(false);expect(put.Item.aiStatus).toBe('pending');
+});
+test('transcript is public only after it is ready and only the processed object is read',async()=>{
+  expect((await getTranscript({pathParameters:{id}})).statusCode).toBe(409);
+  db.mockResolvedValue({Item:{...video,status:'ready',transcriptReady:true}});
+  storage.mockResolvedValue({Body:{transformToString:async()=>JSON.stringify({text:'Hello',segments:[{start:0,end:1,text:'Hello'}]})}});
+  const result=await getTranscript({pathParameters:{id}});
+  expect(result.statusCode).toBe(200);
+  expect(JSON.parse(result.body).text).toBe('Hello');
+  expect(storage.mock.calls[0][0].input.Key).toBe(`processed/${id}/transcript.json`);
+});
+test('AI retry is owner-only and refuses an active job',async()=>{
+  expect((await retryAi(event({},'other'))).statusCode).toBe(403);
+  db.mockResolvedValue({Item:{...video,status:'ready',aiStatus:'transcribing'}});
+  expect((await retryAi(event())).statusCode).toBe(409);
+  expect(aiInvoker.send).not.toHaveBeenCalled();
+});
+test('owner can retry failed AI without changing playback state',async()=>{
+  db.mockResolvedValue({Item:{...video,status:'ready',aiStatus:'failed',transcriptReady:true}});
+  const result=await retryAi(event());
+  expect(result.statusCode).toBe(200);expect(aiInvoker.send).toHaveBeenCalledTimes(1);
+  expect(db.mock.calls[1][0].input.UpdateExpression).not.toContain('#s');
+});
+
+test('snapshot URLs require ownership and enforce bounded slots, size, and timestamps',async()=>{
+  const valid={slot:0,timestamp:1000,size:100};
+  expect((await getFrameUrl(event(valid,'other'))).statusCode).toBe(403);
+  for(const input of [{...valid,slot:16},{...valid,slot:-1},{...valid,timestamp:-1},{...valid,size:200001},{...valid,size:0}])
+    expect((await getFrameUrl(event(input))).statusCode).toBe(400);
+  const response=await getFrameUrl(event(valid));
+  expect(response.statusCode).toBe(200);
+  expect(JSON.parse(response.body).headers).toEqual({'Content-Type':'image/jpeg','x-amz-meta-timestamp':'1000'});
+  const signed=(getSignedUrl as jest.Mock).mock.calls.at(-1);
+  expect(signed[1].input).toMatchObject({Key:`frames/${id}/00.jpg`,ContentLength:100,Metadata:{timestamp:'1000'}});
+  expect(signed[2].unhoistableHeaders.has('x-amz-meta-timestamp')).toBe(true);
+  db.mockResolvedValue({Item:{...video,status:'ready'}});
+  expect((await getFrameUrl(event(valid))).statusCode).toBe(409);
+});
+
+test('owner can retry transcription after visual fallback, but cannot regenerate a fully successful result',async()=>{
+  db.mockResolvedValue({Item:{...video,status:'ready',aiStatus:'ready',transcriptionFailed:true}});
+  expect((await retryAi(event())).statusCode).toBe(200);
+  expect(db.mock.calls[1][0].input.ConditionExpression).toContain('transcriptionFailed = :true');
+  expect(db.mock.calls[1][0].input.UpdateExpression).toContain('REMOVE aiJobName, transcriptionFailed');
+  db.mockResolvedValue({Item:{...video,status:'ready',aiStatus:'ready',transcriptionFailed:false}});
+  expect((await retryAi(event())).statusCode).toBe(409);
 });
