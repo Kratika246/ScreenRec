@@ -1,88 +1,150 @@
-# Architecture, security, and tradeoffs
+# Engineering decisions and tradeoffs
 
-## Scope and assumptions
+## 1. Executive summary
 
-ScreenRec is an assessment-scale Chrome recorder with unlisted sharing and asynchronous AI notes. The priority is a short path from capture to a shareable link, then useful understanding of both speech and screen content.
+ScreenRec is a Chrome recorder built around reducing the effort between showing something on screen and sharing it with another person.
 
-The working deployment uses Groq Whisper for speech and Amazon Nova Lite for multimodal notes. The owner confirmed the deployed flow works on 18 October 2026. That confirmation is distinct from the broader browser/failure-mode [acceptance checklist](acceptance.md).
+Within the two-day constraint, I prioritized the complete recording-to-sharing journey, then recovery and useful AI. The central UX decision was uploading directly to S3 during capture. This overlaps recording and transfer time, while allocating the share link before recording starts. Stop copies that link; playback follows once upload finalization completes.
 
-The current scope excludes editing, trimming, team workspaces, private/revocable links, cloud deletion, Google federation, unlimited transcription, and a Chrome Web Store release.
+WXT, React, and TypeScript reduced extension setup work and kept interface contracts consistent. AWS CDK provided a reproducible backend using managed storage, authentication, metadata, APIs, and delivery without an always-running application server.
 
-## Link readiness and upload
+For differentiation, the implementation combines speech with selected screen snapshots to generate summaries, chapters, and timestamped observations. Groq Whisper and Amazon Nova Lite replaced providers blocked by account activation, preserving the working flow under the deadline.
 
-A video ID and share URL are allocated before recording. MediaRecorder emits WebM data about every five seconds. Because S3 requires every nonfinal multipart part to be at least 5 MiB, a byte-preserving buffer combines recorder events before upload. Two upload lanes overlap network work with capture.
+Advanced editing, collaboration, revocable sharing, long-form transcription, and broader browser support were deliberately deferred. The resulting scope favors a reviewable end-to-end experience, with explicit limits and validation evidence.
 
-Stop copies the existing URL immediately. Final bytes, outstanding parts, and the multipart commit still require network time. The viewer polls through that state. Link readiness, playback readiness, and AI readiness are separate milestones; no zero-latency playback guarantee is claimed.
+## 2. Problem understanding and two-day priorities
 
-IndexedDB retains source chunks and part acknowledgements until cloud completion. Each video part gets up to four attempts with a fresh five-minute URL. Failed uploads can be retried or downloaded. Closing the recorder ends capture and may lose the latest unpersisted event. Very long retry/download operations rebuild a large Blob and need memory profiling.
+The central challenge was the handoff from recording to sharing. The user needs a playable result, a simple way to share it, and a recovery path if saving fails.
 
-The former 99% finalization failure came from using HEAD as a preflight for an object not yet committed. Without ListBucket, S3 could return 403 rather than 404. Completion now lists multipart parts first and uses HEAD only to reconcile an already-committed upload.
+| Window | Priority | Reason |
+| --- | --- | --- |
+| Day 1 | Capture, playable WebM, real AWS upload and viewer | Establish the full path and expose permission, CORS, identity, and multipart risks early. |
+| Day 2 | Recovery, screen-aware AI, and failure states | Add differentiation without making playback depend on AI. |
+| Final pass | UX consistency, ZIP, documentation, and demo checks | Make the result installable and reviewable. |
 
-## Manifest V3 and media
+These are delivery priorities, not a measured time log. Upload defects took precedence over extra features; account activation could not consume the remaining delivery window.
 
-A persistent extension page owns MediaRecorder, streams, composition, timers, persistence, and upload queues. The service worker brokers controls and badge/state updates; it can suspend without owning the capture session. The offscreen document handles clipboard copying.
+## 3. What makes ScreenRec different
 
-The popup opens the recorder, which immediately starts Chrome source selection. Screen + camera is composed into one canvas video track. Web Audio mixes microphone and selected-source audio when available. A content script uses Shadow DOM for page UI, and an extension-hosted camera iframe receives a local WebRTC stream.
+- **Upload while recording:** reduces the transfer left after Stop and makes the preallocated share link immediately available.
+- **Local recovery:** persisted recorder data provides a retry/download path when cloud saving fails.
+- **Screen-aware notes:** combining speech with selected snapshots can explain visible UI and silent demonstrations.
+- **Timestamped error evidence:** observed issues link back to a captured moment, making a bug-report draft easier to verify.
 
-This avoids host-page camera permission prompts, but requires the recorder tab to remain open. Browser scheduling, source coordinate mapping, multi-monitor placement, and duplicate camera presentation still need broad interactive testing.
+These are implemented capabilities and design benefits. Their effect on perceived speed and confidence has not been measured in a usability study.
 
-## Speech and screen-aware AI
+## 4. UX decisions and user journey
 
-S3 multipart completion starts an independent AI pipeline. With the default Groq provider, AiStart dispatches AiResults. The worker reads an SSM SecureString key, signs a private video URL for five minutes, requests a verbose Whisper transcript, validates timed segments, and stores processed JSON in private S3.
+The journey is: choose a mode, select the source, approve permissions, count down, record, stop, and share. Each state should explain what is happening and what the user can do next.
 
-The free-plan adapter enforces 25,000,000 bytes for the entire video. This is sufficient for short demos, not a general long-recording transcription solution. Audio-only extraction/chunking is the next improvement. Groq receives the recorded media, which is an explicit third-party processing boundary.
+| User friction | Decision | Intended benefit |
+| --- | --- | --- |
+| Unclear capture start | Countdown after permissions | Time to prepare the screen and speech. |
+| Losing controls when the popup closes | Persistent recorder, timer, pause/resume and stop | Accessible controls and visible session state. |
+| Impersonal screen explanations | Camera bubble | Keeps the speaker visible alongside the work. |
+| Waiting to obtain a URL | Allocate early and copy on Stop | One sharing action, with manual Copy link as fallback. |
+| Ambiguous saving progress | Separate uploading and finalizing states | Explains why a copied link may still await playback. |
+| Arriving before everything is ready | Viewer readiness states and independent AI polling | Watch once video saving completes; notes can follow. |
+| Redoing work after failure | Actionable errors, retry, and download recovery | A next step using retained data. |
 
-Screen understanding uses browser-side sampling instead of a video-decoding fleet. Samples are taken at the start, about every ten seconds while active, and Stop. Sixteen fixed object slots preserve the first and latest images plus a reservoir spanning capture. Each JPEG is at most 1600 x 900 and 200,000 bytes.
+The UI distinguishes link copied, video playable, and AI ready. Clipboard behavior when unfocused, bubble placement, and interruption recovery remain browser acceptance scenarios.
 
-The reservoir bounds retained objects, not total requests: long recordings overwrite slots repeatedly. Uploads are best effort and never fail video saving. Stop gives pending snapshots at most two seconds to drain. Late or failed uploads can reduce the evidence available to the AI worker.
+## 5. Architecture and technology choices
 
-Nova Lite receives available snapshots and speech through Bedrock Converse. It returns validated JSON for title, summary, chapters, and observed issues. Chapter timestamps must match supplied evidence timestamps; issues must additionally reference a screen snapshot. The prompt treats screen text and transcripts as untrusted data and provides no tools.
+| Choice | Why it suited the assignment |
+| --- | --- |
+| WXT | Handles MV3 entrypoints, development builds, and packaging, freeing time for recording behavior. |
+| React + TypeScript | Supports changing UI state and shared extension/API/AI contracts. |
+| S3 + Lambda + DynamoDB | Direct uploads, small control-plane handlers, and managed metadata without an application server. |
+| Cognito + CloudFront | Hosted sign-in and delivery from private S3 origins. |
+| AWS CDK | Reviewable, reproducible infrastructure in the same language as the application. |
 
-Sampling can miss transient errors and cannot prove clicks, causal transitions, reproduction steps, or root causes. The viewer labels AI sources and supports review against video timestamps. Silent screens can generate visual notes; camera-only capture uses speech. Empty inputs finish without invented notes.
+AWS matched the requested backend and supports overlapping capture with direct-to-S3 transfer. Video bytes avoid API Gateway and Lambda.
 
-## Reliability and storage
+The existing REST API, Cognito pool, and extension identity were retained to protect the working deployment. HTTP API migration offered less value under the deadline than stable uploads. WXT simplifies builds; browser permissions and media lifetimes still need explicit handling.
 
-AI upload readiness is separate from video status. Attempt IDs reject stale events, and short leases reduce duplicate concurrent speech/model calls. They do not guarantee exactly-once execution across crashes between a provider response and persistence.
+## 6. Recording reliability and recovery
 
-Transcripts live in private S3 instead of DynamoDB to avoid item-size pressure. Metadata stores only summary/results and availability flags. Transcript readiness is published before model generation, preserving useful text if summarization fails.
+MediaRecorder runs in a persistent extension page, separate from the MV3 service worker. The recorder owns streams, upload, and persistence; the offscreen document handles clipboard copying. The recorder tab must remain open.
 
-A failed summary reuses the processed transcript on retry, alongside any unexpired snapshots. A failed speech stage can fall back to visual notes and expose Retry transcription. Old videos cannot gain visual evidence retroactively; server-side frame extraction is not implemented.
+Five-second recorder events are buffered into S3-compatible parts because every nonfinal part must reach 5 MiB. Two upload lanes overlap transfer with capture; the tail upload and commit finish after Stop.
+
+IndexedDB retains chunks and acknowledgements until completion, enabling retry/download. Closing the recorder ends capture and may lose the latest unpersisted event. Recovery is implemented, but comprehensive interruption tests remain outstanding.
+
+An observed 99% finalization failure led to replacing the missing-object HEAD preflight with ListParts. [Known issues](known-issues.md) records the cause and regression coverage.
+
+## 7. AI integration and provider tradeoffs
+
+Speech alone would miss visible errors and silent walkthroughs. The model therefore combines a timed transcript with selected snapshots to generate a title, summary, chapters, and observed issues. Output timestamps are checked against supplied evidence and can be selected to seek.
+
+**Groq Whisper** replaced Transcribe after SubscriptionRequiredException. It accepts WebM and provides segment timestamps through a free plan suited to short demos. The tradeoffs are third-party media processing, quotas, and a 25 MB whole-video limit; audio extraction/chunking is deferred.
+
+**Nova Lite** replaced Claude after Marketplace AccessDeniedException. Its image-and-text support works through the same Bedrock Converse contract, preserving the notes pipeline while avoiding that activation prerequisite. AWS inference remains metered. [Incident details](known-issues.md) explain both changes.
+
+AI runs independently of playback. Summary retries reuse the saved transcript and available snapshots; speech failure can fall back to labeled visual notes. Sparse snapshots can miss events and cannot establish reproduction steps or root causes. AI accuracy needs review against playback.
+
+## 8. Security, scalability, and cost
+
+Owner operations require Cognito authentication and ownership checks. Private S3 buckets use CloudFront OAC for delivery; upload URLs expire after five minutes. The Groq key stays in server-side SSM.
+
+Links are **unlisted**: anyone holding one can view the video and notes. Groq receives the recorded media through a private URL; Nova processes transcript and snapshots through its US inference profile.
+
+Direct S3 transfer, on-demand metadata, and asynchronous AI support growth, but quotas, client storage, concurrency, and bandwidth still limit capacity. No production load test is claimed.
+
+The appendix's **USD 3-5 allowance per 1,000 short demo recordings** is illustrative, not measured spending or a current-price guarantee. Its bitrate, viewing, retention, and token assumptions materially affect the result.
+
+## 9. Testing and validation
+
+| Evidence | What it establishes |
+| --- | --- |
+| Automated checks | Multipart/retry, ownership, public fields, AI failure/timestamp, attempt/lease, polling, and infrastructure/IAM coverage. Services are mocked. |
+| Local builds | TypeScript, lint, packaging, and synthesis compatibility; not deployed provider access. |
+| Owner confirmation, 18 October 2026 | The deployed Groq + Nova flow was reported working. |
+| Remaining acceptance work | Full browser/failure, multi-monitor, background scheduling, AI-quality, and performance coverage. |
+
+The [acceptance checklist](acceptance.md) keeps unverified scenarios visible. Recovery tests do not prove every interruption is recoverable. Provider changes bypassed the AWS blockers; Transcribe and Claude activation were not confirmed fixed.
+
+## 10. Limitations and future improvements
+
+The deadline favored capture, sharing, recovery, and useful AI over feature breadth.
+
+| Deferred work | Reason and consequence |
+| --- | --- |
+| Audio chunking and historical frame extraction | Adds media processing/alignment; speech needs short files and old videos cannot gain uncaptured evidence. |
+| Editing, trimming, and more formats | A separate workflow; this release shares the original WebM. |
+| Teams and Google federation | Expands identity cases; the current library uses Cognito username/password. |
+| Private/revocable links, deletion, retention controls | Requires coordinated access/storage/cache changes; sharing remains unlisted. |
+| Quotas, alarms, job reconciliation, pagination | Operational hardening remains; the library returns the newest 50 recordings. |
+| Cross-browser automation, CI, and Web Store distribution | Expands release testing; Chrome and unpacked/ZIP delivery are supported. |
+
+Next: audio extraction/chunking and broader capture tests, then job recovery/monitoring and budgets, then deletion/sharing controls. Editing and collaboration would follow those reliability and capacity improvements.
+
+## 11. Technical appendix
+
+### Capture and evidence details
+
+Screen + camera is composed into a canvas video track; Web Audio mixes microphone and available source audio. Page UI uses Shadow DOM, with an extension-hosted camera iframe receiving a local WebRTC stream.
+
+Sampling occurs at the start, about every ten seconds while active, and Stop. Sixteen fixed slots retain the first/latest images and a reservoir spanning capture. Each JPEG is capped at 1600 x 900 and 200,000 bytes. Slots bound retained objects, not total upload requests. Snapshot upload is best effort and gets at most two seconds to drain at Stop, so late/failed uploads can reduce evidence.
+
+### Failure isolation, access, and retention
+
+Each video part gets up to four attempts with a fresh URL. Completion validates ownership, upload identity, ordered parts, ETags, sizes, and duration. The 5 GiB completion limit does not itself cap bytes sent through presigned PUTs; per-user abuse controls remain deferred.
+
+AI attempt IDs reject stale events, and short leases reduce duplicate concurrent calls. They do not guarantee exactly-once execution across a crash between provider response and persistence. Transcripts live in private S3 to avoid DynamoDB item-size pressure. Old videos without snapshots remain speech-only; retries cannot reconstruct expired evidence.
+
+The model treats transcript/image text as untrusted data and receives no tools. Bedrock IAM is scoped to the configured profile/model; Nova needs no Marketplace subscription actions. Optional Claude activation restricts Subscribe to a specific product. Public metadata excludes ownership/upload/internal job identifiers. Broader HTTPS extension host permissions should be narrowed for a production release.
 
 | Data | Retention |
 | --- | --- |
 | Incomplete multipart uploads | Aborted after one day |
-| Raw optional Transcribe output | 30 days |
-| Screen snapshots | 30 days |
+| Screen snapshots and raw optional Transcribe output | 30 days |
 | Processed transcripts and committed videos | No automatic expiry |
 | AI dead-letter queue | 14 days |
 
-Retain policies protect buckets, the table, and Cognito on stack deletion. Retained resources can continue to incur charges. Automatic reconciliation of lost terminal events or permanently stuck jobs is deferred.
+Retain policies protect buckets, the table, and Cognito on stack deletion; retained resources may still incur charges. Automatic stuck-job reconciliation is deferred. The original Cognito pool's immutable username/alias configuration is preserved.
 
-## Authentication and sharing
-
-Cognito hosted sign-in uses authorization code + PKCE, OAuth state checks, refresh, and revocation. The original username-based pool is preserved because UsernameAttributes and aliases cannot be changed in place. Google federation remains deferred.
-
-API Gateway's REST API uses a Cognito authorizer for owner operations. Handlers enforce ownership and stored upload identity. The existing REST API was kept to avoid migration risk; HTTP API is a future cost reduction.
-
-Public reads intentionally allow anyone with an opaque UUID link to access video and notes. This is unlisted sharing, not private access control. Metadata excludes owner IDs, internal job names, and upload identifiers.
-
-## Security boundaries
-
-- S3 buckets block public access, require TLS, and use managed encryption. CloudFront OAC authorizes video/site origin access.
-- Video and snapshot uploads go directly to S3 through five-minute presigned URLs. Snapshot signing constrains key slots, content type, byte count, and timestamp metadata.
-- Completion validates consecutive part numbers, ETags, minimum part sizes, total bytes, duration, and ownership. The 5 GiB completion limit does not itself cap bytes sent through presigned multipart PUTs.
-- Only AiResults reads the configured SSM key. Keys stay out of the extension and public API. Groq logs omit secrets, signed URLs, and provider response bodies.
-- Bedrock invocation is scoped to the configured profile and backing model. Default Nova needs no Marketplace subscription permissions.
-- The optional Claude activation path restricts Subscribe to the exact configured product. It does not bypass account billing, first-use, or organization controls.
-- API throttling and incomplete-upload cleanup limit common failure costs. Per-user quotas, abuse controls, retention controls, alarms, and tighter deployment-specific extension host permissions are future work.
-
-## Scalability
-
-S3 handles video transfer directly; Lambda does not relay video bytes. CloudFront caches delivery, DynamoDB uses on-demand capacity, and AI runs asynchronously. The browser holds only bounded snapshot queues, but local recording persistence still grows with duration.
-
-The main practical limits are provider quotas, Lambda concurrency, video bandwidth, client storage/memory, and the 25 MB speech adapter. A production version needs audio extraction, durable job orchestration, per-user budgets, larger-library pagination, monitoring, and deletion policies.
-
-## Rough cost per 1,000 short recordings
+### Illustrative cost per 1,000 short recordings
 
 This is a planning example, not a measured bill or current-price guarantee. Assume 1,000 recordings of 30 seconds, 5 MB each, one full playback each, one month of retention, up to sixteen 200 KB snapshots per recording, and one AI call with 8,000 total input tokens including images and 500 output tokens.
 
@@ -100,9 +162,3 @@ Budget roughly **USD 3-5 for this specific short-demo workload**, allowing for c
 The unit-rate assumptions are illustrated in AWS's [Nova cost discussion](https://aws.amazon.com/blogs/machine-learning/effective-cost-optimization-strategies-for-amazon-bedrock/), [S3 cost example](https://docs.aws.amazon.com/solutions/latest/live-streaming-on-aws-with-amazon-s3/cost-example-1.html), and [CloudFront transfer example](https://aws.amazon.com/blogs/networking-and-content-delivery/implementing-granular-cost-analysis-for-multi-tenant-cloudfront-distributions/). Check current [S3](https://aws.amazon.com/s3/pricing/), [CloudFront](https://aws.amazon.com/cloudfront/pricing/), [Bedrock](https://aws.amazon.com/bedrock/pricing/), and [Groq limits](https://console.groq.com/docs/rate-limits) before operating at scale.
 
 For comparison, 1,000 ten-minute recordings at 2.5 Mbps store roughly 190 GB before snapshots/audio and deliver a similar amount per full view. That workload exceeds the current free speech adapter's per-file limit and needs a different processing design.
-
-## Provider decisions and verification
-
-Transcribe account activation and Claude Marketplace activation blocked the original AWS-only AI plan. Groq Whisper and Nova Lite removed those specific dependencies while retaining AWS storage, APIs, metadata, delivery, and multimodal processing. [Known issues](known-issues.md) preserves the exact failures and the owner's successful deployment confirmation.
-
-Automated tests cover contracts, validation, IAM templates, concurrency guards, and recovery paths with mocked services. Local builds verify packaging/type compatibility. The owner confirmed the working deployment; comprehensive browser, abuse, performance, and AI-quality validation remain separate acceptance work.
